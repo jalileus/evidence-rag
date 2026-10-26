@@ -1,8 +1,9 @@
 .venv/
 __pycache__/
-*.py[cod]
 .env
 .env.*
-outputs/
+data
+data/*
 index/
-data/textbook.pdf
+outputs/
+cache/
