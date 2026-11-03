@@ -1,3 +1,6 @@
+
+"""Build a BM25 index from the supplied textbook corpus (corpus.jsonl)"""
+
 import argparse
 import hashlib
 import json
@@ -5,245 +8,288 @@ import pickle
 import re
 import sys
 import time
-
-from datetime import datetime, timezone
+import threading
 from pathlib import Path
 
+import psutil
 from rank_bm25 import BM25Okapi
 
-REQUIRED_FIELDS = {"block_id", "page", "section", "text"}
-
-MATH_SYMBOLS = "+\-−*/=<>≤≥≠≈∂∆△∇∑∏√∞∈∉⊂⊃⊆⊇∩∪∅" "∧∨∀∃→↔ℂℝℤℕ∫∮×·⋅±"
-
-WORD_PATTERN = re.compile(r"[^\W_]+", re.UNICODE)
+MATH_SYMBOLS = "+\\-−*/=<>≤≥≠≈∂∆△∇∑∏√∞∈∉⊂⊃⊆⊇∩∪∅" "∧∨∀∃→↔ℂℝℤℕ∫∮×·⋅±"
+WORD_PATTERN = re.compile(r"[^\W\_]+", re.UNICODE)
 MATH_PATTERN = re.compile(
-    r"[^\W_]+|[" + re.escape(MATH_SYMBOLS) + r"]",
+    r"[^\W\_]+|[" + re.escape(MATH_SYMBOLS) + r"]",
     re.UNICODE,
 )
 
 
-def load_config(path):
-    with path.open("r", encoding="utf-8") as f:
-        config = json.load(f)
-
-    retrieval = config.get("retrieval", {})
-    tokenization = config.get("tokenization", {})
-
-    if retrieval.get("method", "bm25").lower() != "bm25":
-        raise ValueError("This version supports only BM25.")
-
-    k1 = float(retrieval.get("k1", 1.5))
-    b = float(retrieval.get("b", 0.75))
-
-    if k1 <= 0:
-        raise ValueError("BM25 k1 must be greater than zero.")
-
-    if not 0 <= b <= 1:
-        raise ValueError("BM25 b must be between 0 and 1.")
-
-    min_token_length = int(tokenization.get("min_token_length", 1))
-
-    if min_token_length < 1:
-        raise ValueError("min_token_length must be at least 1.")
-
-    return {
-        "k1": k1,
-        "b": b,
-        "lowercase": bool(tokenization.get("lowercase", True)),
-        "include_math_symbols": bool(tokenization.get("include_math_symbols", True)),
-        "min_token_length": min_token_length,
-    }
+def read_json(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-def load_corpus(path):
-    records = []
-    seen_ids = set()
-
-    with path.open("r", encoding="utf-8-sig") as f:
-        for line_number, line in enumerate(f, start=1):
+def read_jsonl(path):
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
             if not line.strip():
                 continue
-
             try:
-                record = json.loads(line)
+                row = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSON on line {line_number}: {exc}") from exc
-
-            if not isinstance(record, dict):
-                raise ValueError(f"Line {line_number} must contain a JSON object.")
-
-            if set(record.keys()) != REQUIRED_FIELDS:
                 raise ValueError(
-                    f"Line {line_number} must contain exactly these fields: "
-                    f"{sorted(REQUIRED_FIELDS)}. "
-                    f"Found: {sorted(record.keys())}"
-                )
-
-            block_id = record["block_id"]
-
-            if not isinstance(block_id, str) or not block_id.strip():
+                    f"Invalid JSON in {path}, line {line_no}: {exc}"
+                ) from exc
+            if not isinstance(row, dict):
                 raise ValueError(
-                    f"Line {line_number}: block_id must be a non-empty string."
+                    f"Expected a JSON object in {path}, line {line_no}."
                 )
+            rows.append(row)
+    return rows
 
-            if block_id in seen_ids:
-                raise ValueError(
-                    f"Duplicate block_id on line {line_number}: {block_id}"
-                )
 
-            page = record["page"]
+def write_jsonl(path, rows):
+    with open(path, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-            if type(page) is not int or page < 1:
-                raise ValueError(
-                    f"Line {line_number}: page must be a positive integer."
-                )
 
-            if not isinstance(record["section"], str):
-                raise ValueError(f"Line {line_number}: section must be a string.")
-
-            if not isinstance(record["text"], str) or not record["text"].strip():
-                raise ValueError(f"Line {line_number}: text must not be empty.")
-
-            seen_ids.add(block_id)
-            records.append(record)
-
-    if not records:
-        raise ValueError("The corpus is empty.")
-
-    return records
+def get_token_settings(config):
+    raw = config.get("tokenization", {})
+    settings = {
+        "lowercase": raw.get("lowercase", True),
+        "include_math_symbols": raw.get("include_math_symbols", True),
+        "min_token_length": raw.get("min_token_length", 1),
+    }
+    if not isinstance(settings["lowercase"], bool):
+        raise ValueError("tokenization.lowercase must be true or false.")
+    if not isinstance(settings["include_math_symbols"], bool):
+        raise ValueError("tokenization.include_math_symbols must be true or false.")
+    if (
+        not isinstance(settings["min_token_length"], int)
+        or isinstance(settings["min_token_length"], bool)
+        or settings["min_token_length"] < 1
+    ):
+        raise ValueError("tokenization.min_token_length must be an integer >= 1.")
+    return settings
 
 
 def tokenize(text, settings):
-    if settings["include_math_symbols"]:
-        tokens = MATH_PATTERN.findall(text)
-    else:
-        tokens = WORD_PATTERN.findall(text)
-
+    pattern = MATH_PATTERN if settings["include_math_symbols"] else WORD_PATTERN
+    tokens = pattern.findall(text)
     if settings["lowercase"]:
         tokens = [token.casefold() for token in tokens]
-
-    min_length = settings["min_token_length"]
-
-    return [token for token in tokens if len(token) >= min_length]
+    minimum = settings["min_token_length"]
+    return [token for token in tokens if len(token) >= minimum]
 
 
-def sha256_file(path):
-    digest = hashlib.sha256()
+def normalize_documents(rows):
+    """Keep one index document per original corpus block and preserve its ID."""
+    documents = []
+    seen_ids = set()
 
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
+    required = ("block_id", "page", "section", "text")
+    for line_no, row in enumerate(rows, start=1):
+        missing = [key for key in required if key not in row]
+        if missing:
+            raise ValueError(
+                f"Corpus row {line_no} is missing required fields: {missing}"
+            )
 
-    return digest.hexdigest()
+        block_id = row["block_id"]
+        if not isinstance(block_id, str) or not block_id.strip():
+            raise ValueError(
+                f"Corpus row {line_no}: block_id must be a non-empty string."
+            )
+        if block_id in seen_ids:
+            raise ValueError(f"Duplicate block_id in corpus: {block_id}")
+        seen_ids.add(block_id)
+
+        if not isinstance(row["text"], str) or not row["text"].strip():
+            raise ValueError(
+                f"Corpus row {line_no} ({block_id}) has empty text."
+            )
+
+        documents.append(
+            {
+                "block_id": block_id,
+                "page": row["page"],
+                "section": row["section"],
+                "text": row["text"],
+            }
+        )
+
+    if not documents:
+        raise ValueError("The corpus contains no documents.")
+    return documents
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build a BM25 index for the textbook corpus."
+        description="Build a BM25 index from corpus.jsonl."
     )
-    parser.add_argument(
-        "--corpus",
-        required=True,
-        type=Path,
-        help="Path to corpus.jsonl",
-    )
-    parser.add_argument(
-        "--output",
-        required=True,
-        type=Path,
-        help="Directory where the index will be saved",
-    )
-    parser.add_argument(
-        "--config",
-        required=True,
-        type=Path,
-        help="Path to config.json",
-    )
+    parser.add_argument("--corpus", required=True, help="Input corpus JSONL.")
+    parser.add_argument("--output", required=True, help="Directory for index files.")
+    parser.add_argument("--config", required=True, help="JSON configuration.")
     args = parser.parse_args()
 
-    if not args.corpus.is_file():
-        parser.error(f"Corpus file not found: {args.corpus}")
+    corpus_path = Path(args.corpus)
+    config_path = Path(args.config)
+    output_dir = Path(args.output)
 
-    if not args.config.is_file():
-        parser.error(f"Config file not found: {args.config}")
+    if not corpus_path.is_file():
+        raise FileNotFoundError(f"Corpus file not found: {corpus_path}")
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    start_time = time.perf_counter()
+    config = read_json(config_path)
+    token_settings = get_token_settings(config)
+    documents = normalize_documents(read_jsonl(corpus_path))
 
-    settings = load_config(args.config)
-    records = load_corpus(args.corpus)
 
-    tokenized_documents = [tokenize(record["text"], settings) for record in records]
+    build_start_time = time.perf_counter()
 
-    empty_documents = sum(1 for tokens in tokenized_documents if not tokens)
+    process = psutil.Process()
+    peak_ram_bytes = [process.memory_info().rss]
+    stop_monitor = threading.Event()
 
-    if empty_documents == len(records):
-        raise ValueError("No searchable tokens were found in the corpus.")
+    def monitor_ram():
+        while not stop_monitor.is_set():
+            try:
+                current_ram = process.memory_info().rss
+                peak_ram_bytes[0] = max(
+                    peak_ram_bytes[0], current_ram
+                )
+            except psutil.Error:
+                pass
 
-    if empty_documents:
-        print(
-            f"Warning: {empty_documents} documents contain no searchable " "tokens.",
-            file=sys.stderr,
+            stop_monitor.wait(0.01)
+
+    ram_monitor = threading.Thread(
+        target=monitor_ram,
+        daemon=True,
+    )
+    ram_monitor.start()
+
+    tokenized_documents = [
+        tokenize(document["text"], token_settings) for document in documents
+    ]
+
+    empty_ids = [
+        doc["block_id"]
+        for doc, tokens in zip(documents, tokenized_documents)
+        if not tokens
+    ]
+
+    if empty_ids:
+        raise ValueError(
+            "These documents have no tokens under the current tokenization "
+            f"settings: {empty_ids[:10]}"
         )
+
+    retrieval_config = config.get("retrieval", {})
+
+    method = retrieval_config.get("method", "bm25")
+    if method != "bm25":
+        raise ValueError(f"Unsupported retrieval method: {method}")
+
+    k1 = float(retrieval_config.get("k1", 1.5))
+    b = float(retrieval_config.get("b", 0.75))
+
+    if k1 <= 0:
+        raise ValueError("retrieval.k1 must be greater than 0.")
+    if not 0 <= b <= 1:
+        raise ValueError("retrieval.b must be between 0 and 1.")
 
     bm25 = BM25Okapi(
         tokenized_documents,
-        k1=settings["k1"],
-        b=settings["b"],
+        k1=k1,
+        b=b,
     )
 
-    output_dir = args.output
     output_dir.mkdir(parents=True, exist_ok=True)
 
     documents_path = output_dir / "documents.jsonl"
-    index_path = output_dir / "bm25.pkl"
+    bm25_path = output_dir / "bm25.pkl"
     manifest_path = output_dir / "manifest.json"
 
-    with documents_path.open("w", encoding="utf-8") as f:
-        for record in records:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    write_jsonl(documents_path, documents)
 
-    with index_path.open("wb") as f:
+    with open(bm25_path, "wb") as f:
         pickle.dump(bm25, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    elapsed_seconds = time.perf_counter() - start_time
+    stop_monitor.set()
+    ram_monitor.join()
+
+    # Build index time in seconds
+    build_time_seconds = round(
+        time.perf_counter() - build_start_time, 3
+    )
+
+    # Peak RAM usage in MB
+    peak_ram_mb = round(
+        peak_ram_bytes[0] / (1024 * 1024), 2
+    )
+
+    # Index size in bytes and MB
+    index_size_bytes = (
+        documents_path.stat().st_size
+        + bm25_path.stat().st_size
+    )
+
+    index_size_mb = round(
+        index_size_bytes / (1024 * 1024), 2
+    )
+
+    corpus_sha256 = hashlib.sha256(
+        corpus_path.read_bytes()
+    ).hexdigest()
 
     manifest = {
-        "format_version": 1,
         "index_type": "BM25Okapi",
-        "document_count": len(records),
-        "empty_token_documents": empty_documents,
-        "corpus_sha256": sha256_file(args.corpus),
-        "bm25": {
-            "k1": settings["k1"],
-            "b": settings["b"],
-        },
-        "tokenization": {
-            "lowercase": settings["lowercase"],
-            "include_math_symbols": settings["include_math_symbols"],
-            "min_token_length": settings["min_token_length"],
-        },
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
-        "build_seconds": round(elapsed_seconds, 3),
-        "python_version": sys.version.split()[0],
+        "document_count": len(documents),
+        "corpus_file": corpus_path.name,
+        "corpus_sha256": corpus_sha256,
+        "tokenization": token_settings,
+        "tokenized_document_count": len(tokenized_documents),
+        "average_tokens_per_document": round(
+            sum(map(len, tokenized_documents))
+            / len(tokenized_documents),
+            3,
+        ),
+
+        "build_time_seconds": build_time_seconds,
+        "peak_ram_mb": peak_ram_mb,
+        "index_size_bytes": index_size_bytes,
+        "index_size_mb": index_size_mb,
+
+        "files": [
+            "documents.jsonl",
+            "bm25.pkl",
+            "manifest.json",
+        ],
     }
 
     manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2),
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 
-    total_size = sum(
-        path.stat().st_size for path in (documents_path, index_path, manifest_path)
-    )
+    print(f"Indexed {len(documents)} source blocks.")
+    print(f"Documents: {documents_path}")
+    print(f"BM25:      {bm25_path}")
+    print(f"Manifest:  {manifest_path}")
 
-    print("\nBM25 index built successfully.")
-    print(f"Documents:   {len(records)}")
-    print(f"Unique IDs:  {len({r['block_id'] for r in records})}")
-    print(f"Build time:  {elapsed_seconds:.2f} seconds")
-    print(f"Index size:  {total_size / (1024 * 1024):.2f} MB")
-    print(f"Saved to:    {output_dir.resolve()}")
-    print(f"Manifest:    {manifest_path}")
+    print(f"Build time: {build_time_seconds} seconds")
+    print(f"Peak RAM:   {peak_ram_mb} MB")
+    print(
+        f"Index size: {index_size_mb} MB "
+        f"({index_size_bytes} bytes)"
+    )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)

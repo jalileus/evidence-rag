@@ -1,0 +1,15 @@
+{"id": "q_001", "llm_calls": 1, "input_tokens": 1424, "output_tokens": 144, "elapsed_ms": 25283, "retrieved_block_ids": ["b0000053", "b0000060", "b0000055", "b0000520", "b0000054"]}
+{"id": "q_002", "llm_calls": 1, "input_tokens": 1283, "output_tokens": 163, "elapsed_ms": 21585, "retrieved_block_ids": ["b0000454", "b0000403", "b0000466", "b0000414", "b0000832"]}
+{"id": "q_003", "llm_calls": 1, "input_tokens": 1243, "output_tokens": 157, "elapsed_ms": 22265, "retrieved_block_ids": ["b0000053", "b0000783", "b0000086", "b0000054", "b0000072"]}
+{"id": "q_004", "llm_calls": 1, "input_tokens": 1430, "output_tokens": 100, "elapsed_ms": 12282, "retrieved_block_ids": ["b0000178", "b0000185", "b0000466", "b0000263", "b0000161"]}
+{"id": "q_005", "llm_calls": 1, "input_tokens": 1133, "output_tokens": 116, "elapsed_ms": 12370, "retrieved_block_ids": ["b0000178", "b0000684", "b0000173", "b0000185", "b0000263"]}
+{"id": "q_006", "llm_calls": 1, "input_tokens": 1168, "output_tokens": 96, "elapsed_ms": 11689, "retrieved_block_ids": ["b0000260", "b0000466", "b0000263", "b0000198", "b0000190"]}
+{"id": "q_007", "llm_calls": 1, "input_tokens": 1233, "output_tokens": 141, "elapsed_ms": 14512, "retrieved_block_ids": ["b0000403", "b0000466", "b0000263", "b0000161", "b0000414"]}
+{"id": "q_008", "llm_calls": 1, "input_tokens": 1258, "output_tokens": 78, "elapsed_ms": 10120, "retrieved_block_ids": ["b0000211", "b0000685", "b0000185", "b0000186", "b0000265"]}
+{"id": "q_009", "llm_calls": 1, "input_tokens": 1639, "output_tokens": 114, "elapsed_ms": 13841, "retrieved_block_ids": ["b0000087", "b0000785", "b0000045", "b0000783", "b0000086"]}
+{"id": "q_010", "llm_calls": 1, "input_tokens": 1423, "output_tokens": 122, "elapsed_ms": 13752, "retrieved_block_ids": ["b0000454", "b0000403", "b0000127", "b0000161", "b0000198"]}
+{"id": "q_011", "llm_calls": 1, "input_tokens": 1138, "output_tokens": 104, "elapsed_ms": 12615, "retrieved_block_ids": ["b0000697", "b0000178", "b0000228", "b0000568", "b0000321"]}
+{"id": "q_012", "llm_calls": 1, "input_tokens": 1162, "output_tokens": 189, "elapsed_ms": 18925, "retrieved_block_ids": ["b0000631", "b0000495", "b0000740", "b0000447", "b0000448"]}
+{"id": "q_013", "llm_calls": 1, "input_tokens": 1256, "output_tokens": 80, "elapsed_ms": 10404, "retrieved_block_ids": ["b0000160", "b0000618", "b0000117", "b0000185", "b0000224"]}
+{"id": "q_014", "llm_calls": 1, "input_tokens": 1010, "output_tokens": 62, "elapsed_ms": 8106, "retrieved_block_ids": ["b0000260", "b0000466", "b0000263", "b0000414", "b0000198"]}
+{"id": "q_015", "llm_calls": 1, "input_tokens": 1487, "output_tokens": 88, "elapsed_ms": 11869, "retrieved_block_ids": ["b0000127", "b0000102", "b0000100", "b0000104", "b0000646"]}

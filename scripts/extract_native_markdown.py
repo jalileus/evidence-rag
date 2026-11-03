@@ -1,7 +1,8 @@
 import re
 import sys
+import unicodedata
 from pathlib import Path
-import pymupdf  
+import pymupdf
 
 ROOT = Path(__file__).resolve().parent.parent
 PDF_PATH = ROOT / "data" / "textbook.pdf"
@@ -10,6 +11,22 @@ OUTPUT_PATH = ROOT / "data" / "native_text.md"
 
 LATIN_EXTENDED = re.compile(r"[\u00c0-\u00ff]")
 CYRILLIC = re.compile(r"[\u0400-\u052f]")
+
+# Runs of cp1251-as-latin1 mojibake (À-ÿ = А-я, ¨ = Ё, ¸ = ё)
+MOJIBAKE_RUN = re.compile(r"[\u00c0-\u00ff\u00a8\u00b8]{3,}")
+
+NEGATION_MAP = {
+    "=": "≠",
+    "∈": "∉",
+    "≡": "≢",
+    "<": "≮",
+    ">": "≯",
+    "⩾": "≱",
+    "⩽": "≰",
+}
+NEGATED_RELATION = re.compile(
+    r"\s*\u0338\s*([" + re.escape("".join(NEGATION_MAP)) + r"])\s*"
+)
 
 TOC_LINE = re.compile(
     r"(?:\.\s*){3,}\d{1,3}\s*$|" r"…{2,}\s*\d{1,3}\s*$|" r"_{3,}\s*\d{1,3}\s*$"
@@ -34,13 +51,20 @@ CHAPTER_HEADING = re.compile(
 PAGE_MARKER = re.compile(r"<!--\s*PAGE\s*:\s*(\d+)\s*-->")
 
 HEADER_LINE = re.compile(
-    r"^\s*(?:"
+    r"^\s*(?:\d{1,4}\s+)?(?:"
     r"ЛЕКЦИИ\s+ПО\s+ТФКП"
     r"|В\.\s*В\.\s*ГОРЯЙНОВ\s*,?\s*"
     r"Е\.\s*С\.\s*ПОЛОВИНКИН"
-    r")\s*$",
+    r")(?:\s+\d{1,4})?\s*$",
     re.IGNORECASE,
 )
+
+
+def _decode_cp1251(text: str) -> str | None:
+    try:
+        return text.encode("latin-1").decode("cp1251")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return None
 
 
 def repair_word(word: str) -> str:
@@ -51,21 +75,27 @@ def repair_word(word: str) -> str:
     if not LATIN_EXTENDED.search(word) or CYRILLIC.search(word):
         return word
 
-    try:
-        candidate = word.encode("latin-1").decode("cp1251")
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        return word
+    candidate = _decode_cp1251(word)
 
-    letters = [char for char in candidate if char.isalpha()]
-    if not letters:
-        return word
+    if candidate is not None:
+        letters = [char for char in candidate if char.isalpha()]
+        if letters:
+            russian_count = sum(bool(CYRILLIC.fullmatch(char)) for char in letters)
+            if russian_count / len(letters) >= 0.65:
+                return candidate
 
-    russian_count = sum(bool(CYRILLIC.fullmatch(char)) for char in letters)
+    # Fallback: the token mixes mojibake with symbols that are not latin-1 encodable
+    def replace_run(match: re.Match) -> str:
+        repaired = _decode_cp1251(match.group())
+        if repaired is None:
+            return match.group()
 
-    if russian_count / len(letters) >= 0.65:
-        return candidate
+        start = match.start()
+        if start > 0 and not CYRILLIC.fullmatch(word[start - 1]):
+            return " " + repaired
+        return repaired
 
-    return word
+    return MOJIBAKE_RUN.sub(replace_run, word)
 
 
 def repair_russian(text: str) -> str:
@@ -89,8 +119,16 @@ def repair_russian(text: str) -> str:
     return re.sub(r"\S+", replace_match, text)
 
 
+def repair_math(text: str) -> str:
+    """Normalize Unicode and rebuild negated relations"""
+    text = NEGATED_RELATION.sub(
+        lambda m: f" {NEGATION_MAP[m.group(1)]} ",
+        text,
+    )
+    return unicodedata.normalize("NFC", text)
+
+
 def heading_candidate(line: str) -> str:
-    """Remove leading symbols sometimes found before extracted headings."""
     return re.sub(r"^[^\w]+", "", line, flags=re.UNICODE).strip()
 
 
@@ -135,7 +173,7 @@ def make_paragraph(lines: list[str]) -> str:
 
 
 def clean_lines(raw_text: str) -> list[str]:
-    raw_text = repair_russian(raw_text)
+    raw_text = repair_math(repair_russian(raw_text))
     lines = [line.strip() for line in raw_text.splitlines()]
 
     cleaned = []

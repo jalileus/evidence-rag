@@ -114,7 +114,7 @@ def split_at_headings(paragraphs: list[str]) -> list[str]:
 
 def merge_short(paras: list[str]) -> list[str]:
     """
-    Merge short paragraphs, but never merge text across a heading.
+    Merge short paragraphs
     """
     merged = []
     buf = ""

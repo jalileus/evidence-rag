@@ -1,0 +1,14 @@
+{
+    "experiment": {
+        "name": "final"
+    },
+    "retrieval": {
+        "top_k": 5,
+        "method": "bm25"
+    },
+    "generation": {
+        "temperature": 0.0,
+        "max_tokens": 1024
+    },
+    "timeout_seconds": 180
+}

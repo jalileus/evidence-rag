@@ -2,8 +2,8 @@
 __pycache__/
 .env
 .env.*
-data
-data/*
 index/
-outputs/
 cache/
+data/*
+!data/dev_questions.jsonl
+!data/dev_gold.jsonl

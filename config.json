@@ -7,6 +7,8 @@
     "tokenization": {
         "lowercase": true,
         "include_math_symbols": true,
-        "min_token_length": 1
+        "min_token_length": 1,
+        "language": "ru",
+        "stemmer": "russian"
     }
 }

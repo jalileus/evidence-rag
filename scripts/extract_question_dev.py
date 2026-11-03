@@ -4,11 +4,36 @@ import re
 from collections import Counter
 from pathlib import Path
 
-
 QA_FILE = Path("data/tfkp_15_qa.md")
 CORPUS_FILE = Path("data/corpus.jsonl")
 QUESTIONS_FILE = Path("data/dev_questions.jsonl")
 GOLD_FILE = Path("data/dev_gold.jsonl")
+
+
+QUESTION_CATEGORY = {
+    1: "условия теорем",
+    2: "условия теорем",
+    3: "сопоставление фрагментов и контрпримеры",
+    4: "сопоставление фрагментов и контрпримеры",
+    5: "условия теорем",
+    6: "условия теорем",
+    7: "короткие вычисления и выводы",
+    8: "условия теорем",
+    9: "сопоставление фрагментов и контрпримеры",
+    10: "короткие вычисления и выводы",
+    11: "короткие вычисления и выводы",
+    12: "сопоставление фрагментов и контрпримеры",
+    13: "недостаточность источника",
+    14: "недостаточность источника",
+    15: "недостаточность источника",
+}
+
+TYPE_LINE_MAP = {
+    "условия": "условия теорем",
+    "сопоставление": "сопоставление фрагментов и контрпримеры",
+    "применение": "короткие вычисления и выводы",
+    "недостаточность данных": "недостаточность источника",
+}
 
 
 def read_jsonl(path):
@@ -41,19 +66,32 @@ def parse_qa(text):
 
         title = body.splitlines()[0].strip()
 
+        # "Тип:" in the .md questions
+        category = QUESTION_CATEGORY.get(number, "unknown")
+
+        type_match = re.search(r"\*\*Тип:\*\*\s*([^\.\n]+)", body)
+        if type_match:
+            type_raw = type_match.group(1).strip().lower()
+            for keyword, cat in TYPE_LINE_MAP.items():
+                if keyword in type_raw:
+                    if cat != category:
+                        print(
+                            f"  WARNING q_{number:03d}: hardcoded={category!r} "
+                            f"but Тип line says {cat!r}. Using hardcoded."
+                        )
+                    break
+
         q_match = re.search(
             r"\*\*Вопрос\.\*\*\s*(.*?)(?=\n\s*\n-\s*\*\*A\.\*\*)", body, re.S
         )
         if not q_match:
             raise ValueError(f"Cannot parse question {number}")
-
         question = clean(q_match.group(1))
 
         options = []
         option_matches = re.findall(r"(?m)^-\s*\*\*([A-D])\.\*\*\s*(.*?)(?=\n|$)", body)
         for option_id, option_text in option_matches:
             options.append({"id": option_id, "text": clean(option_text)})
-
         if len(options) != 4:
             raise ValueError(
                 f"Question {number}: expected 4 options, found {len(options)}"
@@ -62,7 +100,6 @@ def parse_qa(text):
         answer_match = re.search(r"\*\*Ответ:\*\*\s*(.*)", body)
         if not answer_match:
             raise ValueError(f"Cannot parse answer for question {number}")
-
         answer_text = answer_match.group(1).strip()
         abstain = "отказ" in answer_text.lower()
         answer_ids = [] if abstain else re.findall(r"\b[A-D]\b", answer_text)
@@ -70,12 +107,10 @@ def parse_qa(text):
         source_match = re.search(r"\*\*Источник:\*\*\s*(.*)", body)
         if not source_match:
             raise ValueError(f"Cannot parse source for question {number}")
-
         source_line = source_match.group(1)
         pages_match = re.search(r"с\.\s*([\d,\s]+)", source_line)
         if not pages_match:
             raise ValueError(f"Cannot parse source pages for question {number}")
-
         pages = [int(x) for x in re.findall(r"\d+", pages_match.group(1))]
 
         explanation_start = answer_match.end()
@@ -86,6 +121,7 @@ def parse_qa(text):
         result.append(
             {
                 "id": f"q_{number:03d}",
+                "number": number,
                 "title": title,
                 "question": question,
                 "options": options,
@@ -93,36 +129,30 @@ def parse_qa(text):
                 "abstain": abstain,
                 "rationale": rationale[:1200],
                 "pages": pages,
+                "category": category,
             }
         )
 
     if len(result) != 15:
         raise ValueError(f"Expected 15 questions, parsed {len(result)}")
-
     return result
 
 
 def choose_block(page_blocks, query_tokens, idf):
-    """Choose the best-matching original block on one cited PDF page."""
     query_counts = Counter(query_tokens)
-    best_block = None
-    best_score = -1.0
-
+    best_block, best_score = None, -1.0
     for block in page_blocks:
         block_tokens = tokens(block.get("text", ""))
         counts = Counter(block_tokens)
-
+        # TF-IDF score to find the most relevant block for the query
         score = sum(
             idf.get(term, 0.0) * min(freq, counts[term])
             for term, freq in query_counts.items()
         )
-
         score += min(len(block_tokens), 500) * 1e-7
-
         if score > best_score:
             best_score = score
             best_block = block
-
     return best_block
 
 
@@ -188,7 +218,6 @@ def main():
                     raise ValueError(
                         f"{item['id']}: no corpus blocks found for PDF page {page}"
                     )
-
                 block = choose_block(page_blocks, query_tokens, idf)
                 selected_ids.append(block["block_id"])
 
@@ -206,6 +235,7 @@ def main():
                     else "See the cited textbook passages."
                 ),
                 "citation_sets": citation_sets,
+                "category": item["category"],
             }
         )
 
@@ -214,9 +244,17 @@ def main():
 
     print(f"Created {QUESTIONS_FILE} ({len(dev_questions)} questions)")
     print(f"Created {GOLD_FILE} ({len(dev_gold)} gold records)")
-    print("\nAutomatically selected citation IDs:")
+
+    from collections import Counter as C
+
+    cat_counts = C(item["category"] for item in dev_gold)
+    print("\nCategory distribution:")
+    for cat, n in sorted(cat_counts.items()):
+        print(f"  {cat:<30} {n}")
+
+    print("\nCitation IDs selected per question:")
     for item in dev_gold:
-        print(item["id"], item["citation_sets"])
+        print(f"  {item['id']}  [{item['category']}]  {item['citation_sets']}")
 
 
 if __name__ == "__main__":
