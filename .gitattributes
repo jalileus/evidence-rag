@@ -1,0 +1,5 @@
+# Exclude all Jupyter Notebooks from language statistics
+*.ipynb linguist-vendored
+
+# Exclude all HTML files from language statistics 
+*.html -linguist-detectable
